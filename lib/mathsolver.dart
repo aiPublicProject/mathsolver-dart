@@ -83,41 +83,6 @@ double evalExpression(String src) {
     return toks[pos++];
   }
 
-  double expr() {
-    var v = term();
-    while (peek()?.kind == '+' || peek()?.kind == '-') {
-      final op = eat().kind;
-      final r = term();
-      v = op == '+' ? v + r : v - r;
-    }
-    return v;
-  }
-
-  double term() {
-    var v = unary();
-    while (peek()?.kind == '*' || peek()?.kind == '/' || peek()?.kind == '%') {
-      final op = eat().kind;
-      final r = unary();
-      v = op == '*' ? v * r : (op == '/' ? v / r : v % r);
-    }
-    return v;
-  }
-
-  double unary() {
-    if (peek()?.kind == '-') { eat(); return -unary(); }
-    if (peek()?.kind == '+') { eat(); return unary(); }
-    return power();
-  }
-
-  double power() {
-    final base = atom();
-    if (peek()?.kind == '^') {
-      eat();
-      return m.pow(base, unary()).toDouble(); // right associative
-    }
-    return base;
-  }
-
   double atom() {
     final t = eat();
     if (t.kind == 'num') return t.num!;
@@ -142,6 +107,41 @@ double evalExpression(String src) {
       return v;
     }
     throw SolverException('EXPR_SYNTAX', 'unexpected token ${t.kind}');
+  }
+
+  double power() {
+    final base = atom();
+    if (peek()?.kind == '^') {
+      eat();
+      return m.pow(base, unary()).toDouble(); // right associative
+    }
+    return base;
+  }
+
+  double unary() {
+    if (peek()?.kind == '-') { eat(); return -unary(); }
+    if (peek()?.kind == '+') { eat(); return unary(); }
+    return power();
+  }
+
+  double term() {
+    var v = unary();
+    while (peek()?.kind == '*' || peek()?.kind == '/' || peek()?.kind == '%') {
+      final op = eat().kind;
+      final r = unary();
+      v = op == '*' ? v * r : (op == '/' ? v / r : v % r);
+    }
+    return v;
+  }
+
+  double expr() {
+    var v = term();
+    while (peek()?.kind == '+' || peek()?.kind == '-') {
+      final op = eat().kind;
+      final r = term();
+      v = op == '+' ? v + r : v - r;
+    }
+    return v;
   }
 
   final value = expr();
