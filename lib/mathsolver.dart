@@ -75,12 +75,60 @@ List<_Tok> _tokenize(String src) {
 /// Evaluate a pure arithmetic expression string.
 double evalExpression(String src) {
   if (src.trim().isEmpty) throw const SolverException('EXPR_EMPTY', 'empty expression');
-  final toks = _tokenize(src);
-  var pos = 0;
-  _Tok? peek() => pos < toks.length ? toks[pos] : null;
+  return _ExprParser(_tokenize(src)).parseAll();
+}
+
+class _ExprParser {
+  final List<_Tok> tokens;
+  int pos = 0;
+  _ExprParser(this.tokens);
+
+  _Tok? peek() => pos < tokens.length ? tokens[pos] : null;
   _Tok eat() {
-    if (pos >= toks.length) throw const SolverException('EXPR_SYNTAX', 'expected more tokens');
-    return toks[pos++];
+    if (pos >= tokens.length) throw const SolverException('EXPR_SYNTAX', 'expected more tokens');
+    return tokens[pos++];
+  }
+
+  double parseAll() {
+    final v = expr();
+    if (pos != tokens.length) throw const SolverException('EXPR_TRAILING', 'trailing tokens');
+    if (v.isNaN || v.isInfinite) throw const SolverException('EXPR_NON_FINITE', 'non-finite result');
+    return v;
+  }
+
+  double expr() {
+    var v = term();
+    while (peek()?.kind == '+' || peek()?.kind == '-') {
+      final op = eat().kind;
+      final r = term();
+      v = op == '+' ? v + r : v - r;
+    }
+    return v;
+  }
+
+  double term() {
+    var v = unary();
+    while (peek()?.kind == '*' || peek()?.kind == '/' || peek()?.kind == '%') {
+      final op = eat().kind;
+      final r = unary();
+      v = op == '*' ? v * r : (op == '/' ? v / r : v % r);
+    }
+    return v;
+  }
+
+  double unary() {
+    if (peek()?.kind == '-') { eat(); return -unary(); }
+    if (peek()?.kind == '+') { eat(); return unary(); }
+    return power();
+  }
+
+  double power() {
+    final base = atom();
+    if (peek()?.kind == '^') {
+      eat();
+      return m.pow(base, unary()).toDouble(); // right associative
+    }
+    return base;
   }
 
   double atom() {
@@ -108,46 +156,6 @@ double evalExpression(String src) {
     }
     throw SolverException('EXPR_SYNTAX', 'unexpected token ${t.kind}');
   }
-
-  double power() {
-    final base = atom();
-    if (peek()?.kind == '^') {
-      eat();
-      return m.pow(base, unary()).toDouble(); // right associative
-    }
-    return base;
-  }
-
-  double unary() {
-    if (peek()?.kind == '-') { eat(); return -unary(); }
-    if (peek()?.kind == '+') { eat(); return unary(); }
-    return power();
-  }
-
-  double term() {
-    var v = unary();
-    while (peek()?.kind == '*' || peek()?.kind == '/' || peek()?.kind == '%') {
-      final op = eat().kind;
-      final r = unary();
-      v = op == '*' ? v * r : (op == '/' ? v / r : v % r);
-    }
-    return v;
-  }
-
-  double expr() {
-    var v = term();
-    while (peek()?.kind == '+' || peek()?.kind == '-') {
-      final op = eat().kind;
-      final r = term();
-      v = op == '+' ? v + r : v - r;
-    }
-    return v;
-  }
-
-  final value = expr();
-  if (pos != toks.length) throw const SolverException('EXPR_TRAILING', 'trailing tokens');
-  if (value.isNaN || value.isInfinite) throw const SolverException('EXPR_NON_FINITE', 'non-finite result');
-  return value;
 }
 
 bool _numericallyEqual(double a, double b) =>
