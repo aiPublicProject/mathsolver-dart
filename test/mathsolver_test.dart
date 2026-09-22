@@ -1,0 +1,97 @@
+import 'package:mathsolver/mathsolver.dart';
+import 'package:test/test.dart';
+
+const good = '{"answer": 4, "steps": ["Subtract 3: 2x = 8", "Divide by 2: x = 4"], "verification": {"expression": "(11-3)/2"}}';
+const wrong = '{"answer": 4, "steps": ["..."], "verification": {"expression": "(11-3)/3"}}';
+
+void main() {
+  group('evalExpression', () {
+    test('precedence', () {
+      expect(evalExpression('2*3+4'), closeTo(10, 1e-9));
+      expect(evalExpression('2+3*4'), closeTo(14, 1e-9));
+      expect(evalExpression('(2+3)*4'), closeTo(20, 1e-9));
+      expect(evalExpression('2^3^2'), closeTo(512, 1e-9));
+      expect(evalExpression('-3^2'), closeTo(-9, 1e-9));
+    });
+    test('functions and constants', () {
+      expect(evalExpression('sqrt(16)'), closeTo(4, 1e-9));
+      expect(evalExpression('min(3,5)'), closeTo(3, 1e-9));
+      expect(evalExpression('pi'), closeTo(3.141592653589793, 1e-12));
+      expect(evalExpression('log(1000)'), closeTo(3, 1e-9));
+    });
+    test('rejects bad input', () {
+      for (final bad in ['Process.run("x")', '1+2)', 'foo(1)', '']) {
+        expect(() => evalExpression(bad), throwsA(isA<SolverException>()));
+      }
+    });
+  });
+
+  group('solve', () {
+    test('verified first try', () async {
+      var calls = 0;
+      String? seenUrl, seenKey;
+      final r = await solve('2x + 3 = 11, solve for x', apiKey: 'sk-test', transport: (url, body, key) async {
+        calls++;
+        seenUrl = url; seenKey = key;
+        return good;
+      });
+      expect(r.verified, true);
+      expect(r.retries, 0);
+      expect(r.evaluated, 4);
+      expect(calls, 1);
+      expect(seenUrl!.endsWith('/chat/completions'), true);
+      expect(seenKey, 'sk-test');
+    });
+
+    test('retry recovers', () async {
+      var n = 0;
+      final r = await solve('2x+3=11', apiKey: 'sk', transport: (u, b, k) async {
+        n++;
+        return n == 1 ? wrong : good;
+      });
+      expect(r.verified, true);
+      expect(r.retries, 1);
+    });
+
+    test('invalid json then ok', () async {
+      var n = 0;
+      final r = await solve('1+1', apiKey: 'sk', transport: (u, b, k) async {
+        n++;
+        return n == 1 ? 'no json' : good;
+      });
+      expect(r.verified, true);
+    });
+
+    test('invalid twice raises', () async {
+      await expectLater(
+        solve('1+1', apiKey: 'sk', transport: (u, b, k) async => 'nothing'),
+        throwsA(predicate((e) => e is SolverException && e.code == 'INVALID_JSON')),
+      );
+    });
+
+    test('no api key', () async {
+      await expectLater(
+        solve('1+1', apiKey: ''),
+        throwsA(predicate((e) => e is SolverException && e.code == 'NO_API_KEY')),
+      );
+    });
+
+    test('http error no retry', () async {
+      var calls = 0;
+      await expectLater(
+        solve('1+1', apiKey: 'sk', transport: (u, b, k) async {
+          calls++;
+          throw const SolverException('HTTP_ERROR', '401');
+        }),
+        throwsA(predicate((e) => e is SolverException && e.code == 'HTTP_ERROR')),
+      );
+      expect(calls, 1);
+    });
+
+    test('still wrong unverified', () async {
+      final r = await solve('2x+3=11', apiKey: 'sk', transport: (u, b, k) async => wrong);
+      expect(r.verified, false);
+      expect(r.retries, 1);
+    });
+  });
+}
