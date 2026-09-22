@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:mathsolver/mathsolver.dart';
 import 'package:test/test.dart';
 
@@ -95,4 +96,14 @@ void main() {
       expect(r.retries, 1);
     });
   });
-}
+
+  test('smoke: real API round-trip', () async {
+    final key = Platform.environment['SMOKE_API_KEY'];
+    final base = Platform.environment['SMOKE_BASE_URL'] ?? 'https://api.openai.com/v1';
+    final solver = MathSolverClient(apiKey: key!, baseUrl: base);
+    final r = await solver.solve('2x + 3 = 11, solve for x');
+    print('smoke: answer=${r.answer} verified=${r.verified} retries=${r.retries}');
+    expect(r.verified, true);
+    expect(r.answer, 4);
+  }, skip: Platform.environment['SMOKE_API_KEY'] == null ? 'smoke: set SMOKE_API_KEY to run' : false);
+});
