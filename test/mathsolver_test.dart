@@ -30,48 +30,49 @@ void main() {
     test('verified first try', () async {
       var calls = 0;
       String? seenUrl, seenKey;
-      final r = await solve('2x + 3 = 11, solve for x', apiKey: 'sk-test', transport: (url, body, key) async {
+      final solver = MathSolverClient(apiKey: 'sk-test', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', transport: (url, body, key) async {
         calls++;
         seenUrl = url; seenKey = key;
         return good;
       });
+      final r = await solver.solve('2x + 3 = 11, solve for x');
       expect(r.verified, true);
       expect(r.retries, 0);
       expect(r.evaluated, 4);
       expect(calls, 1);
-      expect(seenUrl!.endsWith('/chat/completions'), true);
+      expect(seenUrl, 'https://api.deepseek.com/v1/chat/completions');
       expect(seenKey, 'sk-test');
     });
 
     test('retry recovers', () async {
       var n = 0;
-      final r = await solve('2x+3=11', apiKey: 'sk', transport: (u, b, k) async {
+      final r = await MathSolverClient(apiKey: 'sk', transport: (u, b, k) async {
         n++;
         return n == 1 ? wrong : good;
-      });
+      }).solve('2x+3=11');
       expect(r.verified, true);
       expect(r.retries, 1);
     });
 
     test('invalid json then ok', () async {
       var n = 0;
-      final r = await solve('1+1', apiKey: 'sk', transport: (u, b, k) async {
+      final r = await MathSolverClient(apiKey: 'sk', transport: (u, b, k) async {
         n++;
         return n == 1 ? 'no json' : good;
-      });
+      }).solve('1+1');
       expect(r.verified, true);
     });
 
     test('invalid twice raises', () async {
       await expectLater(
-        solve('1+1', apiKey: 'sk', transport: (u, b, k) async => 'nothing'),
+        MathSolverClient(apiKey: 'sk', transport: (u, b, k) async => 'nothing').solve('1+1'),
         throwsA(predicate((e) => e is SolverException && e.code == 'INVALID_JSON')),
       );
     });
 
     test('no api key', () async {
       await expectLater(
-        solve('1+1', apiKey: ''),
+        MathSolverClient(apiKey: '').solve('1+1'),
         throwsA(predicate((e) => e is SolverException && e.code == 'NO_API_KEY')),
       );
     });
@@ -79,17 +80,17 @@ void main() {
     test('http error no retry', () async {
       var calls = 0;
       await expectLater(
-        solve('1+1', apiKey: 'sk', transport: (u, b, k) async {
+        MathSolverClient(apiKey: 'sk', transport: (u, b, k) async {
           calls++;
           throw const SolverException('HTTP_ERROR', '401');
-        }),
+        }).solve('1+1'),
         throwsA(predicate((e) => e is SolverException && e.code == 'HTTP_ERROR')),
       );
       expect(calls, 1);
     });
 
     test('still wrong unverified', () async {
-      final r = await solve('2x+3=11', apiKey: 'sk', transport: (u, b, k) async => wrong);
+      final r = await MathSolverClient(apiKey: 'sk', transport: (u, b, k) async => wrong).solve('2x+3=11');
       expect(r.verified, false);
       expect(r.retries, 1);
     });

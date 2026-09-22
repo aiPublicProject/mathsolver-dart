@@ -214,57 +214,81 @@ Map<String, dynamic> _parseModelReply(String text) {
   };
 }
 
-/// Solve a math problem with a BYOK key on an OpenAI-compatible endpoint.
-Future<SolveResult> solve(String problem,
-    {required String apiKey,
-    String baseUrl = 'https://api.openai.com/v1',
-    String model = 'gpt-4o-mini',
-    Transport? transport}) async {
-  if (apiKey.isEmpty) throw const SolverException('NO_API_KEY', 'apiKey is required (BYOK)');
-  if (problem.trim().isEmpty) throw const SolverException('NO_PROBLEM', 'problem must be non-empty');
-  final tr = transport ?? _defaultTransport;
-  final url = '${baseUrl.replaceAll(RegExp(r'/+$'), '')}/chat/completions';
-  final messages = [
-    {'role': 'system', 'content': systemPrompt},
-    {'role': 'user', 'content': problem},
-  ];
-  Future<String> call() => tr(url, jsonEncode({'model': model, 'messages': messages, 'temperature': 0}), apiKey);
+/// BYOK client for an OpenAI-compatible endpoint. Instantiate once, solve many.
+///
+/// ```dart
+/// final solver = MathSolverClient(apiKey: 'sk-...', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat');
+/// final r = await solver.solve('2x + 3 = 11, solve for x');
+/// ```
+class MathSolverClient {
+  final String apiKey;
+  final String baseUrl;
+  final String model;
+  final Transport? _transport;
 
-  Map<String, dynamic> parsed;
-  try {
-    parsed = _parseModelReply(await call());
-  } on SolverException catch (e) {
-    if (e.code != 'INVALID_JSON') rethrow;
-    messages.add({'role': 'assistant', 'content': 'invalid JSON'});
-    messages.add({'role': 'user', 'content': 'Your reply was not valid JSON. Reply again with the exact strict JSON shape.'});
-    parsed = _parseModelReply(await call());
-  }
-
-  (double?, bool) evaluate(Map<String, dynamic> p) {
-    try {
-      final ev = evalExpression(p['expression'] as String);
-      return (ev, _numericallyEqual(ev, p['answer'] as double));
-    } on SolverException {
-      return (null, false);
+  MathSolverClient({
+    required this.apiKey,
+    this.baseUrl = 'https://api.openai.com/v1',
+    this.model = 'gpt-4o-mini',
+    Transport? transport,
+  }) : _transport = transport {
+    if (apiKey.isEmpty) throw const SolverException('NO_API_KEY', 'apiKey is required (BYOK)');
+    _base = baseUrl.replaceAll(RegExp(r'/+$'), '');
+    if (!_base!.startsWith('http://') && !_base!.startsWith('https://')) {
+      throw const SolverException('BAD_BASE_URL', 'baseUrl must be an http(s) URL, e.g. https://api.deepseek.com/v1');
     }
   }
 
-  var (evaluated, verified) = evaluate(parsed);
-  var retries = 0;
-  if (!verified) {
-    retries = 1;
-    messages.add({'role': 'user', 'content':
-      'Your verification expression evaluated to ${evaluated ?? "an error"}, which does not match your answer ${parsed['answer"]}. '
-      'Re-derive carefully and reply again with the same strict JSON shape.'});
+  String? _base;
+
+  /// Solve a math problem. `verified` is true only when the model's
+  /// verification expression independently re-evaluates to the answer.
+  Future<SolveResult> solve(String problem) async {
+    if (problem.trim().isEmpty) throw const SolverException('NO_PROBLEM', 'problem must be non-empty');
+    final tr = _transport ?? _defaultTransport;
+    final url = '$_base/chat/completions';
+    final messages = [
+      {'role': 'system', 'content': systemPrompt},
+      {'role': 'user', 'content': problem},
+    ];
+    Future<String> call() => tr(url, jsonEncode({'model': model, 'messages': messages, 'temperature': 0}), apiKey);
+
+    Map<String, dynamic> parsed;
     try {
-      final second = _parseModelReply(await call());
-      final (ev2, ok2) = evaluate(second);
-      if (ev2 != null) evaluated = ev2;
-      if (ok2) { parsed = second; verified = true; }
-    } on SolverException {
-      // keep first attempt
+      parsed = _parseModelReply(await call());
+    } on SolverException catch (e) {
+      if (e.code != 'INVALID_JSON') rethrow;
+      messages.add({'role': 'assistant', 'content': 'invalid JSON'});
+      messages.add({'role': 'user', 'content': 'Your reply was not valid JSON. Reply again with the exact strict JSON shape.'});
+      parsed = _parseModelReply(await call());
     }
+
+    (double?, bool) evaluate(Map<String, dynamic> p) {
+      try {
+        final ev = evalExpression(p['expression'] as String);
+        return (ev, _numericallyEqual(ev, p['answer'] as double));
+      } on SolverException {
+        return (null, false);
+      }
+    }
+
+    var (evaluated, verified) = evaluate(parsed);
+    var retries = 0;
+    if (!verified) {
+      retries = 1;
+      messages.add({'role': 'user', 'content':
+        'Your verification expression evaluated to ${evaluated ?? "an error"}, which does not match your answer ${parsed['answer']}. '
+        'Re-derive carefully and reply again with the same strict JSON shape.'});
+      try {
+        final second = _parseModelReply(await call());
+        final (ev2, ok2) = evaluate(second);
+        if (ev2 != null) evaluated = ev2;
+        if (ok2) { parsed = second; verified = true; }
+      } on SolverException {
+        // keep first attempt
+      }
+    }
+    return SolveResult(parsed['answer'] as double, (parsed['steps'] as List).cast<String>(),
+        parsed['expression'] as String, evaluated, verified, retries);
   }
-  return SolveResult(parsed['answer'] as double, (parsed['steps'] as List).cast<String>(),
-      parsed['expression'] as String, evaluated, verified, retries);
 }
