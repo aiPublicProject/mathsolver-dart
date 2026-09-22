@@ -143,7 +143,7 @@ class _ExprParser {
         if (eat().kind != ')') throw const SolverException('EXPR_SYNTAX', 'expected )');
         final fn = _funcs[name];
         if (fn == null) throw SolverException('EXPR_UNKNOWN_FUNC', 'unknown function $name');
-        return (fn as Function).call(*args) as double;
+        return Function.apply(fn, args).toDouble();
       }
       if (name == 'pi') return m.pi;
       if (name == 'e') return m.e;
