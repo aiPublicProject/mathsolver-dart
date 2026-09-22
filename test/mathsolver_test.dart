@@ -70,9 +70,9 @@ void main() {
       );
     });
 
-    test('no api key', () async {
-      await expectLater(
-        MathSolverClient(apiKey: '').solve('1+1'),
+    test('no api key throws at construction', () {
+      expect(
+        () => MathSolverClient(apiKey: '').solve('1+1'),
         throwsA(predicate((e) => e is SolverException && e.code == 'NO_API_KEY')),
       );
     });
