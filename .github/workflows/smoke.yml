@@ -18,4 +18,4 @@ jobs:
           fi
       - uses: dart-lang/setup-dart@v1
       - run: dart pub get
-      - run: dart test --run-skipped -t smoke
+      - run: dart test --run-skipped --name smoke
