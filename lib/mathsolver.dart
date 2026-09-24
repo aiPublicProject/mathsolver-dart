@@ -1,9 +1,12 @@
-/// mathsolver — BYOK AI math solver with independent verification.
-/// An answer is only `verified: true` when the model's verification
-/// expression (pure arithmetic) is evaluated locally and matches.
+/// mathsolver — BYOK AI math solver with execution-based verification (v0.2).
+///
+/// Correctness model (PAL-style): the model never states the answer.
+/// It returns a small JavaScript-like PROGRAM; this package executes the
+/// program deterministically and the execution output IS the answer.
+/// For equations, a CHECK expression ({x} placeholder) must evaluate to 0
+/// when the computed answer is substituted back into the original equation.
 library mathsolver;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as m;
@@ -18,15 +21,29 @@ class SolverException implements Exception {
 
 const systemPrompt = 'You are a precise math solver.\n'
     'Reply with STRICT JSON only, no markdown fences, in this exact shape:\n'
-    '{"answer": <number>, "steps": [<string>, ...], "verification": {"expression": "<string>"}}\n'
+    '{"program": "<string>", "steps": [<string>, ...], "check": "<string>"}\n'
     'Rules:\n'
-    '- "answer" must be a single number (the final result).\n'
-    '- "steps" must be an array of short plain-language explanation strings.\n'
-    '- "verification.expression" must be a pure arithmetic expression that\n'
-    '  evaluates to the answer. Allowed: numbers, + - * / % ^ ( ), and the\n'
-    '  functions abs sqrt sin cos tan ln log exp floor ceil round min max\n'
-    '  (log is base 10, ln is natural), and the constants pi and e.\n'
-    '- The expression must recompute the answer independently.';
+    '- "program" is a small JavaScript-like program that computes the final answer.\n'
+    '  One statement per line (or ; separated). Allowed statements:\n'
+    '      let NAME = EXPRESSION\n'
+    '      result = EXPRESSION\n'
+    '  EXPRESSIONs may use numbers, + - * / % ^ ( ), the functions\n'
+    '  abs sqrt sin cos tan ln log exp floor ceil round min max\n'
+    '  (log is base 10, ln is natural), the constants pi and e, and any\n'
+    '  variable defined by an earlier let. The value assigned to "result"\n'
+    '  is the answer. Never state the answer as a number in text.\n'
+    '- "steps" is an array of short plain-language explanation strings.\n'
+    '- "check" is a verification expression containing the placeholder {x}.\n'
+    '  After solving, {x} is replaced by the computed answer and the whole\n'
+    '  expression must evaluate to 0.\n'
+    '  For equations, substitute the answer back into the original equation\n'
+    '  (e.g. 2x+3=11 -> "2*{x}+3-11").\n'
+    '  For arithmetic, recompute via a different path and subtract the answer\n'
+    '  (e.g. 15% of 80 -> "80*15/100-{x}"). Provide "check" whenever possible.';
+
+String correctionPrompt(String reason) =>
+    'Your submission failed verification: $reason. '
+    'Re-derive the problem carefully and reply again with the same strict JSON shape.';
 
 /* ---------------- expression evaluator ---------------- */
 
@@ -73,15 +90,17 @@ List<_Tok> _tokenize(String src) {
 }
 
 /// Evaluate a pure arithmetic expression string.
-double evalExpression(String src) {
+/// [env] maps variable names (case-sensitive, shadow pi/e) to values.
+double evalExpression(String src, [Map<String, double>? env]) {
   if (src.trim().isEmpty) throw const SolverException('EXPR_EMPTY', 'empty expression');
-  return _ExprParser(_tokenize(src)).parseAll();
+  return _ExprParser(_tokenize(src), env).parseAll();
 }
 
 class _ExprParser {
   final List<_Tok> tokens;
+  final Map<String, double>? env;
   int pos = 0;
-  _ExprParser(this.tokens);
+  _ExprParser(this.tokens, this.env);
 
   _Tok? peek() => pos < tokens.length ? tokens[pos] : null;
   _Tok eat() {
@@ -135,7 +154,9 @@ class _ExprParser {
     final t = eat();
     if (t.kind == 'num') return t.num!;
     if (t.kind == 'id') {
-      final name = t.id!.toLowerCase();
+      final raw = t.id!;
+      if (env != null && env!.containsKey(raw)) return env![raw]!;
+      final name = raw.toLowerCase();
       if (peek()?.kind == '(') {
         eat();
         final args = <double>[expr()];
@@ -158,68 +179,124 @@ class _ExprParser {
   }
 }
 
-bool _numericallyEqual(double a, double b) =>
-    (a - b).abs() <= 1e-6 * m.max(1, m.max(a.abs(), b.abs()));
+/* ---------------- program interpreter ---------------- */
+
+final _letRe = RegExp(r'^let\s+([a-zA-Z_]\w*)\s*=\s*(.+)$');
+final _assignRe = RegExp(r'^([a-zA-Z_]\w*)\s*=\s*(.+)$');
+final _checkXRe = RegExp(r'\{\s*x\s*\}', caseSensitive: false);
+
+/// Execute a model-generated program. Statements (one per line or ;
+/// separated): let NAME = EXPR | NAME = EXPR | bare EXPR. The answer is
+/// the value of `result`, else the last bare expression. The model never
+/// states the answer as a number — execution output IS the answer.
+double runProgram(String src) {
+  if (src.trim().isEmpty) throw const SolverException('PROGRAM_EMPTY', 'empty program');
+  final env = <String, double>{};
+  var resultDefined = false;
+  var lastDefined = false;
+  var lastValue = 0.0;
+  for (final raw in src.split(RegExp(r'[\n;]+'))) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    final lm = _letRe.firstMatch(line);
+    if (lm != null) {
+      env[lm.group(1)!] = evalExpression(lm.group(2)!, env);
+      if (lm.group(1) == 'result') resultDefined = true;
+      continue;
+    }
+    final am = _assignRe.firstMatch(line);
+    if (am != null) {
+      env[am.group(1)!] = evalExpression(am.group(2)!, env);
+      if (am.group(1) == 'result') resultDefined = true;
+      continue;
+    }
+    lastValue = evalExpression(line, env);
+    lastDefined = true;
+  }
+  if (resultDefined) return env['result']!;
+  if (lastDefined) return lastValue;
+  throw const SolverException('PROGRAM_NO_RESULT', 'program produced no result');
+}
+
+/// Substitute the computed answer into a check expression ({x} placeholder)
+/// and evaluate it. Passes when the value is ~0 (scaled tolerance).
+({double value, bool passed}) runCheck(String checkSrc, double answer) {
+  final substituted = checkSrc.replaceAllMapped(_checkXRe, (_) => '($answer)');
+  final value = evalExpression(substituted);
+  return (value: value, passed: value.abs() <= 1e-6 * m.max(1, answer.abs()));
+}
 
 /* ---------------- solve ---------------- */
 
 class SolveResult {
+  /// Output of executing the model's program locally.
   final double answer;
   final List<String> steps;
-  final String expression;
-  final double? evaluated;
+  /// The executed program (the answer's provenance).
+  final String program;
+  /// Verification expression; null = none provided.
+  final String? check;
+  /// Evaluated check expression; null when no check provided.
+  final double? checkValue;
+  /// True only when the check expression evaluated to ~0.
   final bool verified;
   final int retries;
-  const SolveResult(this.answer, this.steps, this.expression, this.evaluated, this.verified, this.retries);
+  const SolveResult(this.answer, this.steps, this.program, this.check,
+      this.checkValue, this.verified, this.retries);
 }
 
 /// Transport: (url, bodyJson, apiKey) -> model reply text.
 typedef Transport = Future<String> Function(String url, String bodyJson, String apiKey);
 
-Future<String> _defaultTransport(String url, String bodyJson, String apiKey) async {
+/// Test seam for the HTTP interface below the default transport:
+/// (url, headers, bodyJson) -> (status, raw body).
+typedef HttpPost = Future<(int, String)> Function(String url, Map<String, String> headers, String bodyJson);
+
+Future<(int, String)> _realHttpPost(String url, Map<String, String> headers, String bodyJson) async {
   final client = HttpClient();
   try {
-    final req = await client.postUrl(Uri.parse(url))
-      ..headers.set('Content-Type', 'application/json')
-      ..headers.set('Authorization', 'Bearer $apiKey');
+    final req = await client.postUrl(Uri.parse(url));
+    headers.forEach(req.headers.set);
     req.write(bodyJson);
     final res = await req.close();
-    if (res.statusCode >= 300) throw SolverException('HTTP_ERROR', 'API responded ${res.statusCode}');
     final raw = await res.transform(utf8.decoder).join();
-    final content = jsonDecode(raw)['choices'][0]['message']['content'];
-    if (content is! String) throw const SolverException('HTTP_ERROR', 'missing message content');
-    return content;
-  } catch (e) {
-    if (e is SolverException) rethrow;
-    throw SolverException('HTTP_ERROR', 'API call failed: $e');
+    return (res.statusCode, raw);
   } finally {
     client.close();
   }
 }
 
+String contentFromResponse(int status, String raw) {
+  if (status >= 300) throw SolverException('HTTP_ERROR', 'API responded $status');
+  final dynamic content = jsonDecode(raw)['choices']?[0]?['message']?['content'];
+  if (content is! String) throw const SolverException('HTTP_ERROR', 'missing message content');
+  return content;
+}
+
 Map<String, dynamic> _parseModelReply(String text) {
   final start = text.indexOf('{'), end = text.lastIndexOf('}');
   if (start < 0 || end <= start) throw const SolverException('INVALID_JSON', 'no JSON object in reply');
-  final dynamic data = jsonDecode(text.substring(start, end + 1));
-  final dynamic answer = data['answer'];
-  double parsed;
-  if (answer is num) {
-    parsed = answer.toDouble();
-  } else if (answer is String) {
-    final mm = RegExp(r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?').firstMatch(answer);
-    if (mm == null) throw const SolverException('INVALID_JSON', 'missing numeric answer');
-    parsed = double.parse(mm.group(0)!);
-  } else {
-    throw const SolverException('INVALID_JSON', 'missing numeric answer');
+  final dynamic data = _tryJsonDecode(text.substring(start, end + 1));
+  if (data is! Map) throw const SolverException('INVALID_JSON', 'reply was not valid JSON');
+  final dynamic program = data['program'];
+  if (program is! String || program.trim().isEmpty) {
+    throw const SolverException('INVALID_JSON', 'missing program');
   }
-  final dynamic expression = data['verification']?['expression'];
-  if (expression is! String) throw const SolverException('INVALID_JSON', 'missing verification.expression');
   final dynamic steps = data['steps'];
+  final dynamic check = data['check'];
   return {
-    'answer': parsed,
+    'program': program,
     'steps': steps is List ? steps.map((s) => s.toString()).toList() : <String>[],
-    'expression': expression,
+    'check': check is String && check.trim().isNotEmpty ? check : null,
   };
+}
+
+dynamic _tryJsonDecode(String s) {
+  try {
+    return jsonDecode(s);
+  } on FormatException {
+    return null;
+  }
 }
 
 /// BYOK client for an OpenAI-compatible endpoint. Instantiate once, solve many.
@@ -233,13 +310,16 @@ class MathSolverClient {
   final String baseUrl;
   final String model;
   final Transport? _transport;
+  final HttpPost? _httpPost;
 
   MathSolverClient({
     required this.apiKey,
     this.baseUrl = 'https://api.openai.com/v1',
     this.model = 'gpt-4o-mini',
     Transport? transport,
-  }) : _transport = transport {
+    HttpPost? httpPost,
+  })  : _transport = transport,
+        _httpPost = httpPost {
     if (apiKey.isEmpty) throw const SolverException('NO_API_KEY', 'apiKey is required (BYOK)');
     _base = baseUrl.replaceAll(RegExp(r'/+$'), '');
     if (!_base!.startsWith('http://') && !_base!.startsWith('https://')) {
@@ -249,11 +329,19 @@ class MathSolverClient {
 
   String? _base;
 
-  /// Solve a math problem. `verified` is true only when the model's
-  /// verification expression independently re-evaluates to the answer.
+  /// Solve a math problem. `answer` is the output of executing the model's
+  /// program; `verified` is true only when the check expression ({x}
+  /// substituted with the answer) evaluated to ~0.
   Future<SolveResult> solve(String problem) async {
     if (problem.trim().isEmpty) throw const SolverException('NO_PROBLEM', 'problem must be non-empty');
-    final tr = _transport ?? _defaultTransport;
+    final post = _httpPost ?? _realHttpPost;
+    Future<String> Function(String, String, String) tr = _transport ?? (url, bodyJson, apiKey) async {
+      final (status, raw) = await post(url, {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $apiKey',
+      }, bodyJson);
+      return contentFromResponse(status, raw);
+    };
     final url = '$_base/chat/completions';
     final messages = [
       {'role': 'system', 'content': systemPrompt},
@@ -271,32 +359,41 @@ class MathSolverClient {
       parsed = _parseModelReply(await call());
     }
 
-    (double?, bool) evaluate(Map<String, dynamic> p) {
+    ({bool ok, double answer, double? checkValue, bool verified, SolverException? err}) attempt(
+        Map<String, dynamic> p) {
       try {
-        final ev = evalExpression(p['expression'] as String);
-        return (ev, _numericallyEqual(ev, p['answer'] as double));
-      } on SolverException {
-        return (null, false);
+        final answer = runProgram(p['program'] as String);
+        double? cv;
+        var v = false;
+        final check = p['check'] as String?;
+        if (check != null) {
+          final r = runCheck(check, answer);
+          cv = r.value;
+          v = r.passed;
+        }
+        return (ok: true, answer: answer, checkValue: cv, verified: v, err: null);
+      } on SolverException catch (e) {
+        return (ok: false, answer: 0, checkValue: null, verified: false, err: e);
       }
     }
 
-    var (evaluated, verified) = evaluate(parsed);
+    var outcome = attempt(parsed);
     var retries = 0;
-    if (!verified) {
+    if (!outcome.ok || !outcome.verified) {
       retries = 1;
-      messages.add({'role': 'user', 'content':
-        'Your verification expression evaluated to ${evaluated ?? "an error"}, which does not match your answer ${parsed['answer']}. '
-        'Re-derive carefully and reply again with the same strict JSON shape.'});
-      try {
-        final second = _parseModelReply(await call());
-        final (ev2, ok2) = evaluate(second);
-        if (ev2 != null) evaluated = ev2;
-        if (ok2) { parsed = second; verified = true; }
-      } on SolverException {
-        // keep first attempt
-      }
+      final reason = outcome.ok
+          ? 'check evaluated to ${outcome.checkValue} instead of 0'
+          : 'program failed to execute (${outcome.err!.code}: ${outcome.err!.message})';
+      messages.add({'role': 'assistant', 'content': jsonEncode(parsed)});
+      messages.add({'role': 'user', 'content': correctionPrompt(reason)});
+      final secondParsed = _parseModelReply(await call()); // second failure throws
+      final second = attempt(secondParsed);
+      if (!second.ok) throw second.err!; // PROGRAM_* error persisted after retry
+      parsed = secondParsed;
+      outcome = second;
     }
-    return SolveResult(parsed['answer'] as double, (parsed['steps'] as List).cast<String>(),
-        parsed['expression'] as String, evaluated, verified, retries);
+    return SolveResult(outcome.answer, (parsed['steps'] as List).cast<String>(),
+        parsed['program'] as String, parsed['check'] as String?,
+        outcome.checkValue, outcome.verified, retries);
   }
 }
