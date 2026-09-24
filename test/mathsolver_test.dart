@@ -9,9 +9,9 @@ const noCheck = '{"program": "result = 0.15 * 80", "steps": ["Compute 15% of 80"
 const wrongCheck = '{"program": "let d = 11 - 3;\\nresult = d / 2", "steps": ["..."], "check": "2*{x} + 3 - 12"}';
 const brokenProgram = '{"program": "result = undefinedvar + 1", "steps": []}';
 
-bool isCode(String code) => predicate((e) => e is SolverException && e.code == code);
-bool isCodePrefix(String prefix) =>
-    predicate((e) => e is SolverException && (e.code.startsWith(prefix)));
+Matcher isCode(String code) => predicate((e) => e is SolverException && e.code == code);
+Matcher isCodePrefix(String prefix) =>
+    predicate((e) => e is SolverException && e.code.startsWith(prefix));
 
 void main() {
   group('evalExpression', () {
