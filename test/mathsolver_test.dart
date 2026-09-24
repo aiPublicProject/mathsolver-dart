@@ -241,8 +241,14 @@ void main() {
 
   test('smoke: real API round-trip', () async {
     final key = Platform.environment['SMOKE_API_KEY'];
-    final base = Platform.environment['SMOKE_BASE_URL'] ?? 'https://api.openai.com/v1';
-    final solver = MathSolverClient(apiKey: key!, baseUrl: base);
+    final env = Platform.environment;
+    final base = (env['SMOKE_BASE_URL'] == null || env['SMOKE_BASE_URL']!.isEmpty)
+        ? 'https://api.openai.com/v1'
+        : env['SMOKE_BASE_URL']!;
+    final model = (env['SMOKE_MODEL'] == null || env['SMOKE_MODEL']!.isEmpty)
+        ? 'gpt-4o-mini'
+        : env['SMOKE_MODEL']!;
+    final solver = MathSolverClient(apiKey: key!, baseUrl: base, model: model);
     final r = await solver.solve('2x + 3 = 11, solve for x');
     print('smoke: answer=${r.answer} verified=${r.verified} retries=${r.retries}');
     expect(r.verified, true);
