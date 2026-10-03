@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
-import 'package:mathsolver/mathsolver.dart';
+import 'package:mathsolver_help/mathsolver.dart';
 import 'package:test/test.dart';
 
 // v0.2 protocol fixtures: the model returns program/steps/check — never an answer.
