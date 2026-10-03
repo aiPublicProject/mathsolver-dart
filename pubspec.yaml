@@ -1,9 +1,9 @@
-name: mathsolver
-description: "BYOK AI math solver with independent verification — bring your own OpenAI-compatible API key, answers verified by local expression evaluation."
-version: 0.1.0
+name: mathsolver_help
+description: "BYOK AI math solver with execution-based verification (PAL-style) — bring your own OpenAI-compatible API key; the answer is computed locally by executing a model-generated program, never taken from a number the model stated."
+version: 0.2.0
 homepage: https://mathsolver.help
-repository: https://github.com/mathsolver-help/mathsolver-dart
-issue_tracker: https://github.com/mathsolver-help/mathsolver-dart/issues
+repository: https://github.com/aiPublicProject/mathsolver-dart
+issue_tracker: https://github.com/aiPublicProject/mathsolver-dart/issues
 environment:
   sdk: ">=3.0.0 <4.0.0"
 dev_dependencies:
